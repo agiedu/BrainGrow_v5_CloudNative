@@ -1,12 +1,333 @@
 package com.braingrow.service;
-import com.braingrow.dto.*; import com.braingrow.entity.*; import com.braingrow.repository.*; import com.braingrow.security.*; import org.springframework.beans.factory.annotation.Value; import org.springframework.security.crypto.password.PasswordEncoder; import org.springframework.stereotype.Service; import org.springframework.transaction.annotation.Transactional;
-import java.security.SecureRandom; import java.time.LocalDateTime;
-@Service public class AuthService {
- private final UserRepository users; private final VerificationCodeRepository codes; private final PasswordEncoder encoder; private final JwtService jwt; private final EmailService email; private final LoginAttemptService attempts; private final SecureRandom random=new SecureRandom(); private final int codeMinutes, cooldown;
- public AuthService(UserRepository u,VerificationCodeRepository c,PasswordEncoder e,JwtService j,EmailService m,LoginAttemptService a,@Value("${app.verification-expiration-minutes:10}") int cm,@Value("${app.verification-cooldown-seconds:60}") int cd){users=u;codes=c;encoder=e;jwt=j;email=m;attempts=a;codeMinutes=cm;cooldown=cd;}
- @Transactional public void register(RegisterRequest r){String em=norm(r.email());if(users.existsByEmailIgnoreCase(em))throw new IllegalArgumentException("Email already registered");User u=new User();u.setEmail(em);u.setPasswordHash(encoder.encode(r.password()));u.setAge(r.age());u.setRole(Role.STUDENT);u.setEnabled(true);users.save(u);}
- public AuthResponse login(LoginRequest r){String em=norm(r.email());if(attempts.isLocked(em))throw new IllegalArgumentException("Too many failed attempts. Try again later.");User u=users.findByEmailIgnoreCase(em).orElse(null);if(u==null||!u.isEnabled()||!encoder.matches(r.password(),u.getPasswordHash())){attempts.failure(em);throw new IllegalArgumentException("Invalid email or password");}attempts.success(em);return new AuthResponse(jwt.generate(u.getEmail(),u.getRole().name()),u.getEmail(),u.getRole().name());}
- @Transactional public void sendResetCode(String emailAddress){String em=norm(emailAddress);var user=users.findByEmailIgnoreCase(em);if(user.isEmpty())throw new IllegalArgumentException("If the account exists, a code will be sent");var last=codes.findTopByEmailIgnoreCaseAndPurposeOrderByExpiresAtDesc(em,"RESET");if(last.isPresent()&&last.get().getExpiresAt().minusMinutes(codeMinutes).plusSeconds(cooldown).isAfter(LocalDateTime.now()))throw new IllegalArgumentException("Please wait before requesting another code");codes.deleteByEmailIgnoreCaseAndPurpose(em,"RESET");VerificationCode v=new VerificationCode();v.setEmail(em);v.setPurpose("RESET");v.setCode(String.format("%06d",random.nextInt(1_000_000)));v.setExpiresAt(LocalDateTime.now().plusMinutes(codeMinutes));codes.save(v);email.sendCode(em,v.getCode());}
- @Transactional public void reset(ResetPasswordRequest r){String em=norm(r.email());VerificationCode v=codes.findTopByEmailIgnoreCaseAndPurposeOrderByExpiresAtDesc(em,"RESET").orElseThrow(()->new IllegalArgumentException("Invalid or expired code"));if(v.getExpiresAt().isBefore(LocalDateTime.now())||!v.getCode().equals(r.code()))throw new IllegalArgumentException("Invalid or expired code");User u=users.findByEmailIgnoreCase(em).orElseThrow(()->new IllegalArgumentException("Invalid or expired code"));u.setPasswordHash(encoder.encode(r.newPassword()));users.save(u);codes.delete(v);attempts.success(em);}
- private String norm(String s){return s.trim().toLowerCase(Locale.ROOT);}
+
+import com.braingrow.dto.AuthResponse;
+import com.braingrow.dto.RegisterRequest;
+import com.braingrow.dto.ResetPasswordRequest;
+import com.braingrow.entity.User;
+import com.braingrow.entity.VerificationCode;
+import com.braingrow.repository.UserRepository;
+import com.braingrow.repository.VerificationCodeRepository;
+import com.braingrow.security.JwtService;
+
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.security.SecureRandom;
+import java.time.LocalDateTime;
+import java.util.Locale;
+
+
+@Service
+public class AuthService {
+
+
+    private final UserRepository users;
+
+    private final VerificationCodeRepository codes;
+
+    private final PasswordEncoder encoder;
+
+    private final JwtService jwt;
+
+    private final EmailService email;
+
+
+    private final SecureRandom random = new SecureRandom();
+
+
+
+    public AuthService(
+            UserRepository users,
+            VerificationCodeRepository codes,
+            PasswordEncoder encoder,
+            JwtService jwt,
+            EmailService email
+    ) {
+        this.users = users;
+        this.codes = codes;
+        this.encoder = encoder;
+        this.jwt = jwt;
+        this.email = email;
+    }
+
+
+
+    /**
+     * 用户注册
+     */
+    @Transactional
+    public void register(RegisterRequest request) {
+
+
+        String emailAddress =
+                request.email()
+                        .trim()
+                        .toLowerCase(Locale.ROOT);
+
+
+
+        if (users.existsByEmailIgnoreCase(emailAddress)) {
+
+            throw new IllegalArgumentException(
+                    "Email already registered"
+            );
+        }
+
+
+
+        User user = new User();
+
+        user.setEmail(emailAddress);
+
+        user.setPasswordHash(
+                encoder.encode(
+                        request.password()
+                )
+        );
+
+        user.setAge(
+                request.age()
+        );
+
+
+        users.save(user);
+
+    }
+
+
+
+
+
+    /**
+     * 用户登录
+     */
+    public AuthResponse login(
+            com.braingrow.dto.LoginRequest request
+    ) {
+
+
+        String emailAddress =
+                request.email()
+                        .trim()
+                        .toLowerCase(Locale.ROOT);
+
+
+
+        User user =
+                users.findByEmailIgnoreCase(emailAddress)
+                        .orElseThrow(
+                                () ->
+                                new IllegalArgumentException(
+                                        "Invalid email or password"
+                                )
+                        );
+
+
+
+        if (
+                !user.isEnabled()
+                ||
+                !encoder.matches(
+                        request.password(),
+                        user.getPasswordHash()
+                )
+        ) {
+
+            throw new IllegalArgumentException(
+                    "Invalid email or password"
+            );
+
+        }
+
+
+
+        String token =
+                jwt.generate(
+                        user.getEmail(),
+                        user.getRole().name()
+                );
+
+
+
+        return new AuthResponse(
+                token,
+                user.getEmail(),
+                user.getRole().name()
+        );
+
+    }
+
+
+
+
+
+    /**
+     * 发送密码重置验证码
+     */
+    @Transactional
+    public void sendResetCode(
+            String emailAddress
+    ) {
+
+
+        String email =
+                emailAddress
+                        .trim()
+                        .toLowerCase(Locale.ROOT);
+
+
+
+        users.findByEmailIgnoreCase(email)
+                .orElseThrow(
+                        () ->
+                        new IllegalArgumentException(
+                                "If the account exists, a code will be sent"
+                        )
+                );
+
+
+
+        codes.deleteByEmailIgnoreCaseAndPurpose(
+                email,
+                "RESET"
+        );
+
+
+
+        VerificationCode verification =
+                new VerificationCode();
+
+
+
+        verification.setEmail(email);
+
+        verification.setPurpose("RESET");
+
+        verification.setCode(
+                String.format(
+                        "%06d",
+                        random.nextInt(1000000)
+                )
+        );
+
+
+        verification.setExpiresAt(
+                LocalDateTime.now()
+                        .plusMinutes(10)
+        );
+
+
+
+        codes.save(verification);
+
+
+
+        emailServiceSend(
+                email,
+                verification.getCode()
+        );
+
+    }
+
+
+
+
+    /**
+     * 重置密码
+     */
+    @Transactional
+    public void reset(
+            ResetPasswordRequest request
+    ) {
+
+
+        String email =
+                request.email()
+                        .trim()
+                        .toLowerCase(Locale.ROOT);
+
+
+
+        VerificationCode verification =
+                codes
+                .findTopByEmailIgnoreCaseAndPurposeOrderByExpiresAtDesc(
+                        email,
+                        "RESET"
+                )
+                .orElseThrow(
+                        () ->
+                        new IllegalArgumentException(
+                                "Invalid or expired code"
+                        )
+                );
+
+
+
+        if (
+                verification.getExpiresAt()
+                        .isBefore(LocalDateTime.now())
+                ||
+                !verification.getCode()
+                        .equals(request.code())
+        ) {
+
+            throw new IllegalArgumentException(
+                    "Invalid or expired code"
+            );
+
+        }
+
+
+
+
+        User user =
+                users.findByEmailIgnoreCase(email)
+                        .orElseThrow(
+                                () ->
+                                new IllegalArgumentException(
+                                        "Invalid or expired code"
+                                )
+                        );
+
+
+
+        user.setPasswordHash(
+                encoder.encode(
+                        request.newPassword()
+                )
+        );
+
+
+
+        users.save(user);
+
+
+
+        codes.delete(
+                verification
+        );
+
+    }
+
+
+
+
+
+    /**
+     * 邮件发送封装
+     * 防止未来替换邮件服务影响业务
+     */
+    private void emailServiceSend(
+            String email,
+            String code
+    ) {
+
+        this.email.sendCode(
+                email,
+                code
+        );
+
+    }
+
 }
